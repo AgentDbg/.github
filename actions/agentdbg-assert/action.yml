@@ -1,0 +1,75 @@
+name: 'AgentDbg Assert'
+description: 'Run AgentDbg behavioral regression checks on agent traces'
+inputs:
+  agent-script:
+    description: 'Python script that runs the agent (must use @trace)'
+    required: true
+  baseline:
+    description: 'Path to baseline JSON file'
+    required: false
+    default: ''
+  policy:
+    description: 'Path to policy YAML file'
+    required: false
+    default: '.agentdbg/policy.yaml'
+  python-version:
+    description: 'Python version to use'
+    required: false
+    default: '3.12'
+  extra-args:
+    description: 'Additional arguments to pass to agentdbg assert'
+    required: false
+    default: ''
+  post-comment:
+    description: 'Post results as PR comment (true/false)'
+    required: false
+    default: 'true'
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install AgentDbg
+      shell: bash
+      run: pip install agentdbg
+
+    - name: Run agent
+      shell: bash
+      run: python ${{ inputs.agent-script }}
+
+    - name: Get latest run ID
+      shell: bash
+      id: get-run
+      run: |
+        RUN_ID=$(agentdbg list --json | python -c "import sys,json; data=json.load(sys.stdin); print(data['runs'][0]['run_id'] if data.get('runs') else '')")
+        echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+
+    - name: Run assertions
+      shell: bash
+      id: assert
+      run: |
+        ARGS=""
+        if [ -n "${{ inputs.baseline }}" ]; then
+          ARGS="$ARGS --baseline ${{ inputs.baseline }}"
+        fi
+        if [ -f "${{ inputs.policy }}" ]; then
+          ARGS="$ARGS --policy ${{ inputs.policy }}"
+        fi
+        if [ -n "${{ inputs.extra-args }}" ]; then
+          ARGS="$ARGS ${{ inputs.extra-args }}"
+        fi
+        agentdbg assert ${{ steps.get-run.outputs.run_id }} $ARGS --format markdown > agentdbg-report.md || echo "assert_failed=true" >> $GITHUB_OUTPUT
+
+    - name: Post PR comment
+      if: ${{ inputs.post-comment == 'true' && github.event_name == 'pull_request' }}
+      uses: marocchino/sticky-pull-request-comment@v2
+      with:
+        path: agentdbg-report.md
+
+    - name: Fail if assertions failed
+      shell: bash
+      if: steps.assert.outputs.assert_failed == 'true'
+      run: exit 1
